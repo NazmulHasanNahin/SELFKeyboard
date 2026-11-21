@@ -11,8 +11,8 @@ android {
         applicationId = "com.mykb.keyboard"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 3
+        versionName = "0.3"
     }
 
     signingConfigs {
@@ -27,6 +27,11 @@ android {
     buildTypes {
         getByName("debug") {
             signingConfig = signingConfigs.getByName("mykey")
+        }
+        getByName("release") {
+            signingConfig = signingConfigs.getByName("mykey")
+            isMinifyEnabled = false
+            isDebuggable = false
         }
     }
 

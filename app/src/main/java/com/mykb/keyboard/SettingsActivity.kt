@@ -22,6 +22,7 @@ import android.widget.Toast
 
 class SettingsActivity : Activity() {
     private lateinit var status: TextView
+    private lateinit var backupStatus: TextView
     private lateinit var sp: SharedPreferences
     private lateinit var col: LinearLayout
 
@@ -115,8 +116,25 @@ class SettingsActivity : Activity() {
         }
 
         section("চেহারা ও সাইজ")
-        seekRow("কিবোর্ডের উচ্চতা", Prefs.HEIGHT, 70, 140, 100, "%")
-        seekRow("অক্ষরের সাইজ", Prefs.TEXT, 80, 130, 100, "%")
+        val presets = listOf(
+            Triple("ছোট", 85, 90), Triple("মাঝারি", 100, 100), Triple("বড়", 125, 125),
+            Triple("অনেক বড়", 150, 150), Triple("বিশাল", 180, 175), Triple("সর্বোচ্চ", 210, 200)
+        )
+        button("সাইজ প্রিসেট বাছুন (ছোট থেকে সর্বোচ্চ)") {
+            AlertDialog.Builder(this)
+                .setTitle("কিবোর্ডের সাইজ")
+                .setItems(presets.map { it.first + "  (উচ্চতা ${it.second}%, অক্ষর ${it.third}%)" }.toTypedArray()) { _, which ->
+                    val p = presets[which]
+                    sp.edit().putInt(Prefs.HEIGHT, p.second).putInt(Prefs.TEXT, p.third)
+                        .putInt(Prefs.BAR, (p.second + p.third) / 2).apply()
+                    Prefs.touch(this)
+                    recreate()
+                }
+                .show()
+        }
+        seekRow("কিবোর্ডের উচ্চতা (কী-র সারি)", Prefs.HEIGHT, 60, 220, 100, "%")
+        seekRow("অক্ষর/আইকনের সাইজ", Prefs.TEXT, 70, 200, 100, "%")
+        seekRow("উপরের টুলবার ও সাজেশন বারের সাইজ", Prefs.BAR, 80, 200, 100, "%")
         switchRow("উপরে নাম্বার রো (১-০) দেখান", Prefs.NUMROW, true)
         val themeBtn = button("থিম: " + Prefs.themeNames[sp.getInt(Prefs.THEME, 0).coerceIn(0, Prefs.themeNames.size - 1)]) {}
         themeBtn.setOnClickListener {
@@ -129,6 +147,8 @@ class SettingsActivity : Activity() {
                 }
                 .show()
         }
+
+        switchRow("ফোনে যে ইমোজি দেখা যায় না সেগুলোও তালিকায় রাখুন", Prefs.SHOWUNSUP, false)
 
         section("কী চাপার অনুভূতি")
         switchRow("ভাইব্রেশন", Prefs.HAPTIC, true)
@@ -150,14 +170,33 @@ class SettingsActivity : Activity() {
         status.setPadding(0, dp(14), 0, dp(6))
         section("ডাটা ও ব্যাকআপ")
         col.addView(status)
-        button("ব্যাকআপ এক্সপোর্ট (JSON ফাইল সেভ)") {
+        backupStatus = TextView(this)
+        backupStatus.textSize = 14f
+        backupStatus.setTextColor(0xFF444444.toInt())
+        backupStatus.setPadding(0, dp(4), 0, dp(8))
+        col.addView(backupStatus)
+        note("একবার একটা ব্যাকআপ ফাইল বাছুন (যেমন Google Drive → My Drive-এ)। এরপর কিবোর্ড নিজে থেকেই প্রতি কয়েক ঘণ্টায় সেটা আপডেট করবে।")
+        button("অটো ব্যাকআপ ফাইল বাছুন (Google Drive-এ রাখুন)") {
             val i = Intent(Intent.ACTION_CREATE_DOCUMENT)
             i.addCategory(Intent.CATEGORY_OPENABLE)
             i.type = "application/json"
             i.putExtra(Intent.EXTRA_TITLE, "mykeyboard-backup.json")
+            i.addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            )
             startActivityForResult(i, 1)
         }
-        button("ব্যাকআপ ইমপোর্ট (JSON ফাইল থেকে রিস্টোর)") {
+        button("এখনই ব্যাকআপ নিন") {
+            Thread {
+                val m = Backup.runNow(applicationContext)
+                runOnUiThread {
+                    Toast.makeText(this, if (m.isEmpty()) "ব্যাকআপ হয়েছে" else "ব্যর্থ: $m", Toast.LENGTH_LONG).show()
+                    refreshStatus()
+                }
+            }.start()
+        }
+        button("ব্যাকআপ ফাইল থেকে রিস্টোর (নতুন ফোনে)") {
             val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
             i.addCategory(Intent.CATEGORY_OPENABLE)
             i.type = "*/*"
@@ -193,6 +232,11 @@ class SettingsActivity : Activity() {
 
     private fun refreshStatus() {
         status.text = "শেখা শব্দ সংখ্যা: " + Store.get(this).wordCount()
+        val u = Backup.uri(this)
+        val last = sp.getLong(Prefs.BACKUP_LAST, 0)
+        val whenTxt = if (last == 0L) "এখনো হয়নি" else java.text.DateFormat.getDateTimeInstance().format(java.util.Date(last))
+        backupStatus.text = if (u == null) "অটো ব্যাকআপ: চালু নেই" else
+            "অটো ব্যাকআপ: চালু\nশেষ ব্যাকআপ: $whenTxt\nঅবস্থা: " + (sp.getString(Prefs.BACKUP_MSG, "") ?: "")
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -201,13 +245,25 @@ class SettingsActivity : Activity() {
         val uri = data?.data ?: return
         try {
             if (requestCode == 1) {
-                val json = Store.get(this).exportJson()
-                contentResolver.openOutputStream(uri, "wt")?.use { it.write(json.toByteArray(Charsets.UTF_8)) }
-                Toast.makeText(this, "ব্যাকআপ সেভ হয়েছে", Toast.LENGTH_LONG).show()
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                } catch (e: Exception) {
+                }
+                sp.edit().putString(Prefs.BACKUP_URI, uri.toString()).putLong(Prefs.BACKUP_LAST, 0).apply()
+                Thread {
+                    val m = Backup.runNow(applicationContext)
+                    runOnUiThread {
+                        Toast.makeText(this, if (m.isEmpty()) "অটো ব্যাকআপ চালু হয়েছে" else "ব্যর্থ: $m", Toast.LENGTH_LONG).show()
+                        refreshStatus()
+                    }
+                }.start()
             } else if (requestCode == 2) {
                 val text = contentResolver.openInputStream(uri)?.use { String(it.readBytes(), Charsets.UTF_8) } ?: ""
-                val n = Store.get(this).importJson(text)
+                val n = Backup.restore(this, text)
                 Toast.makeText(this, "রিস্টোর হয়েছে ($n টি এন্ট্রি)", Toast.LENGTH_LONG).show()
+                recreate()
             }
         } catch (e: Exception) {
             Toast.makeText(this, "ব্যর্থ: " + e.message, Toast.LENGTH_LONG).show()
